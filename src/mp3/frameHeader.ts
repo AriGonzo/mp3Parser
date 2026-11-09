@@ -61,8 +61,7 @@ export function parseFrameHeader(bytes: Uint8Array, offset: number): FrameHeader
   if (bitrate === 0 || sampleRate === 0) return null;
 
   // 1152 samples / 8 bits per byte = 144.
-  const frameLength =
-    Math.floor(((SAMPLES_PER_FRAME / 8) * bitrate) / sampleRate) + paddingBit;
+  const frameLength = Math.floor(((SAMPLES_PER_FRAME / 8) * bitrate) / sampleRate) + paddingBit;
 
   return { bitrate, sampleRate, padding: paddingBit === 1, frameLength };
 }
