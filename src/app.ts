@@ -1,7 +1,7 @@
 import express, { type ErrorRequestHandler } from "express";
 import multer from "multer";
 import { HttpError } from "./errors.js";
-import { countFrames } from "./mp3/countFrames.js";
+import { frameCountingStorage } from "./frameCountingStorage.js";
 
 /** The multipart/form-data field the MP3 must be sent in. */
 const UPLOAD_FIELD = "file";
@@ -15,11 +15,11 @@ export interface AppOptions {
 export function createApp({ maxFileSizeMb = 100 }: AppOptions = {}) {
   const app = express();
 
-  // Multer reads multipart/form-data uploads. memoryStorage() keeps the whole file in
-  // memory as a Buffer (req.file.buffer). Simple, but a large upload uses that much RAM;
-  // see the streaming improvement planned for later. The size limit caps the damage.
+  // Multer reads multipart/form-data uploads. Our storage engine counts frames as the
+  // file streams in and never stores it, so memory use stays small for any file size.
+  // The size limit still stops a client tying up the server with an endless upload.
   const upload = multer({
-    storage: multer.memoryStorage(),
+    storage: frameCountingStorage,
     // Multer needs a whole number of bytes.
     limits: { fileSize: Math.floor(maxFileSizeMb * 1024 * 1024) },
   });
@@ -41,7 +41,8 @@ export function createApp({ maxFileSizeMb = 100 }: AppOptions = {}) {
       throw new HttpError(400, "The uploaded file is empty.");
     }
 
-    const frameCount = countFrames(req.file.buffer);
+    // Counted by frameCountingStorage while the upload streamed in.
+    const frameCount = req.file.frameCount ?? 0;
 
     // We check the file's actual contents rather than trusting the content type the
     // client sent: if there are no valid frames, it isn't an MP3 we can count.
