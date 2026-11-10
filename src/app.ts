@@ -1,4 +1,4 @@
-import express, { type ErrorRequestHandler } from "express";
+import express, { type ErrorRequestHandler, type RequestHandler } from "express";
 import multer from "multer";
 import { HttpError } from "./errors.js";
 import { frameCountingStorage } from "./frameCountingStorage.js";
@@ -24,12 +24,26 @@ export function createApp({ maxFileSizeMb = 100 }: AppOptions = {}) {
     limits: { fileSize: Math.floor(maxFileSizeMb * 1024 * 1024) },
   });
 
+  // Runs multer, and treats a failure to read the upload (e.g. a malformed multipart body)
+  // as the client's mistake (400) rather than a server error (500). Multer's own errors,
+  // like the size limit, are passed on unchanged and handled in toHttpError.
+  const receiveUpload: RequestHandler = (req, res, next) => {
+    upload.single(UPLOAD_FIELD)(req, res, (err?: unknown) => {
+      if (err && !(err instanceof multer.MulterError)) {
+        console.warn("Could not read upload:", err);
+        next(new HttpError(400, "The upload couldn't be read. Is it valid multipart/form-data?"));
+        return;
+      }
+      next(err);
+    });
+  };
+
   app.get("/health", (_req, res) => {
     res.json({ status: "ok" });
   });
 
   // Accepts an MP3 in the UPLOAD_FIELD form field and responds with its frame count.
-  app.post("/file-upload", upload.single(UPLOAD_FIELD), (req, res) => {
+  app.post("/file-upload", receiveUpload, (req, res) => {
     if (!req.file) {
       throw new HttpError(
         400,

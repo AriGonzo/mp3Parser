@@ -37,7 +37,7 @@ Every error comes back in the same shape, `{ "error": "..." }`, with a status co
 
 | Status | When                                                                         |
 | ------ | ---------------------------------------------------------------------------- |
-| 400    | No file sent, wrong field name, or an empty file                             |
+| 400    | No file sent, wrong field name, an empty file, or a malformed upload         |
 | 413    | File is over 100 MB                                                          |
 | 422    | The file arrived, but it has no MP3 frames in it                             |
 | 404    | Unknown route                                                                |

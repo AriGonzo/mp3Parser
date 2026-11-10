@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp, type AppOptions } from "./app.js";
 
 const sample = readFileSync(new URL("../test/fixtures/sample.mp3", import.meta.url));
@@ -93,6 +93,21 @@ describe("POST /file-upload", () => {
 
       expect(res.status).toBe(400);
       expect(await res.json()).toEqual({ error: "The uploaded file is empty." });
+    });
+
+    it("400 when the upload itself is malformed", async () => {
+      // Says it's multipart, but the body isn't. This is the client's mistake, not a 500.
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+      const res = await fetch(`${server.baseUrl}/file-upload`, {
+        method: "POST",
+        headers: { "Content-Type": "multipart/form-data; boundary=xyz" },
+        body: "this is not a multipart body",
+      });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: expect.stringContaining("couldn't be read") });
+      warn.mockRestore();
     });
 
     it("422 when the file isn't an MP3", async () => {
