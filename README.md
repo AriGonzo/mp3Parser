@@ -31,6 +31,14 @@ curl -F "file=@test/fixtures/sample.mp3" http://localhost:3000/file-upload
 { "frameCount": 6089 }
 ```
 
+### Live version
+
+It's also deployed at https://mp3parser.onrender.com. It's on Render's free tier, so if nobody's used it for a while, the first request takes about 30 seconds while it wakes up.
+
+```bash
+curl -F "file=@test/fixtures/sample.mp3" https://mp3parser.onrender.com/file-upload
+```
+
 ### When something's wrong
 
 Every error comes back in the same shape, `{ "error": "..." }`, with a status code:
