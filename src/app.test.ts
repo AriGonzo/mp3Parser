@@ -95,6 +95,16 @@ describe("POST /file-upload", () => {
       expect(await res.json()).toEqual({ error: "The uploaded file is empty." });
     });
 
+    it("400 when more than one file is sent", async () => {
+      const form = fileForm(sample);
+      form.append("file", new Blob([sample]), "second.mp3");
+
+      const res = await upload(form);
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Only one file can be uploaded at a time." });
+    });
+
     it("400 when the upload itself is malformed", async () => {
       // Says it's multipart, but the body isn't. This is the client's mistake, not a 500.
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

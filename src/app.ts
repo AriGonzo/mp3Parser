@@ -87,6 +87,11 @@ function toHttpError(err: unknown, maxFileSizeMb: number): HttpError | null {
       case "LIMIT_FILE_SIZE":
         return new HttpError(413, `File too large. The maximum size is ${maxFileSizeMb} MB.`);
       case "LIMIT_UNEXPECTED_FILE":
+        // Multer uses this code both for a file in the wrong field and for a second file
+        // in the right one, so check which it was to give a message that makes sense.
+        if (err.field === UPLOAD_FIELD) {
+          return new HttpError(400, "Only one file can be uploaded at a time.");
+        }
         return new HttpError(
           400,
           `Unexpected field "${err.field}". Send the MP3 in a form field named "${UPLOAD_FIELD}".`,
