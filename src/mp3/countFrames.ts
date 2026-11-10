@@ -50,36 +50,141 @@ function isXingFrame(bytes: Uint8Array, offset: number): boolean {
   });
 }
 
+/** How far into the first frame isXingFrame reads: header + largest side info + 4-char marker. */
+const XING_CHECK_SIZE = FRAME_HEADER_SIZE + 32 + 4;
+
+/** Joins two byte arrays. Skips the copy when the first is empty (the usual case). */
+function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+  if (a.length === 0) return b;
+  const result = new Uint8Array(a.length + b.length);
+  result.set(a, 0);
+  result.set(b, a.length);
+  return result;
+}
+
 /**
- * Counts the audio frames in an MPEG-1 Layer III file.
+ * Counts the audio frames in an MPEG-1 Layer III file that arrives in pieces ("chunks"),
+ * e.g. from an upload stream, without ever holding the whole file in memory.
+ *
+ *   const counter = new FrameCounter();
+ *   counter.push(chunk1);
+ *   counter.push(chunk2);
+ *   const frameCount = counter.finish();
+ *
+ * Chunks are cut at arbitrary points, so a frame (or a frame header) can be split across
+ * two chunks. Between chunks we only remember:
+ *   - how many bytes are still to skip (the rest of a frame or ID3 tag), and
+ *   - a few leftover bytes (at most XING_CHECK_SIZE - 1) that we need more data to read.
+ * So memory use stays the same no matter how big the file is.
+ */
+export class FrameCounter {
+  #count = 0;
+  #checkedForId3 = false;
+  #isFirstFrame = true;
+  /** Bytes still to skip before the next thing we need to read. */
+  #bytesToSkip = 0;
+  /** Whether the most recent frame we jumped over was counted (for the truncation check). */
+  #lastFrameCounted = false;
+  /** Bytes from the end of the previous chunk that we couldn't read yet. */
+  #leftover: Uint8Array = new Uint8Array(0);
+  #finished = false;
+
+  /** Feeds the next chunk of the file in. */
+  push(chunk: Uint8Array): void {
+    if (this.#finished) throw new Error("FrameCounter: push() called after finish()");
+
+    let data = chunk;
+
+    // Still in the middle of a frame (or the ID3 tag) from an earlier chunk: skip past it.
+    if (this.#bytesToSkip > 0) {
+      const skipped = Math.min(this.#bytesToSkip, data.length);
+      this.#bytesToSkip -= skipped;
+      data = data.subarray(skipped);
+    }
+
+    if (data.length > 0) {
+      this.#process(concat(this.#leftover, data), false);
+    }
+  }
+
+  /** Signals the end of the file and returns the number of audio frames. */
+  finish(): number {
+    if (!this.#finished) {
+      this.#finished = true;
+      this.#process(this.#leftover, true);
+
+      // The file ended part-way through the last frame we counted, so it's incomplete.
+      if (this.#bytesToSkip > 0 && this.#lastFrameCounted) {
+        this.#count -= 1;
+      }
+    }
+
+    return this.#count;
+  }
+
+  /**
+   * Walks frame to frame through `bytes`, the same way as reading a whole file, except it
+   * stops when it needs more data and saves where it got to.
+   * `isLastChunk` is true when no more data is coming, so we shouldn't wait for any.
+   */
+  #process(bytes: Uint8Array, isLastChunk: boolean): void {
+    let offset = 0;
+
+    // The very start of the file: skip the ID3v2 tag, if there is one.
+    if (!this.#checkedForId3) {
+      if (bytes.length < ID3V2_HEADER_SIZE && !isLastChunk) {
+        this.#leftover = bytes.slice(); // not enough bytes to tell yet
+        return;
+      }
+      this.#checkedForId3 = true;
+      offset = id3v2TagSize(bytes);
+    }
+
+    while (offset <= bytes.length) {
+      const remaining = bytes.length - offset;
+
+      // Not enough bytes left to read a header: wait for the next chunk.
+      if (remaining < FRAME_HEADER_SIZE) break;
+
+      // The Xing check reads up to XING_CHECK_SIZE bytes into the first frame.
+      if (this.#isFirstFrame && remaining < XING_CHECK_SIZE && !isLastChunk) break;
+
+      const header = parseFrameHeader(bytes, offset);
+
+      // No valid header here (e.g. junk, or a trailing ID3v1 tag): step forward and keep looking.
+      if (header === null) {
+        offset += 1;
+        continue;
+      }
+
+      const isAudio = !(this.#isFirstFrame && isXingFrame(bytes, offset));
+      if (isAudio) this.#count += 1;
+
+      this.#isFirstFrame = false;
+      this.#lastFrameCounted = isAudio;
+      offset += header.frameLength;
+    }
+
+    // If we jumped past the end of this chunk, skip the rest in the next one(s).
+    if (offset > bytes.length) {
+      this.#bytesToSkip = offset - bytes.length;
+      offset = bytes.length;
+    }
+
+    // Copy (not just reference) the leftover, so we don't keep the whole chunk in memory.
+    this.#leftover = bytes.slice(offset);
+  }
+}
+
+/**
+ * Counts the audio frames in an MPEG-1 Layer III file that is already fully in memory.
  *
  * Skips any ID3v2 tag, then walks from frame to frame using each header's frame length.
  * A leading Xing/Info frame is not counted, as it contains no audio (this matches mediainfo).
+ * A final frame cut off by the end of the file is not counted.
  */
 export function countFrames(bytes: Uint8Array): number {
-  let offset = id3v2TagSize(bytes);
-  let count = 0;
-  let isFirstFrame = true;
-
-  while (offset + FRAME_HEADER_SIZE <= bytes.length) {
-    const header = parseFrameHeader(bytes, offset);
-
-    // No valid header here (e.g. junk, or a trailing ID3v1 tag): step forward and keep looking.
-    if (header === null) {
-      offset += 1;
-      continue;
-    }
-
-    // Stop if the file ends part-way through this frame.
-    if (offset + header.frameLength > bytes.length) break;
-
-    if (!(isFirstFrame && isXingFrame(bytes, offset))) {
-      count += 1;
-    }
-
-    isFirstFrame = false;
-    offset += header.frameLength;
-  }
-
-  return count;
+  const counter = new FrameCounter();
+  counter.push(bytes);
+  return counter.finish();
 }

@@ -18,7 +18,7 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { countFrames } from "./countFrames.js";
+import { countFrames, FrameCounter } from "./countFrames.js";
 
 // ---------------------------------------------------------------------------
 // Helpers for building fake MP3 data
@@ -156,5 +156,77 @@ describe("countFrames", () => {
       const truncated = frame().subarray(0, 100);
       expect(countFrames(concat(frame(), frame(), truncated))).toBe(2);
     });
+  });
+});
+
+/**
+ * FrameCounter (streaming)
+ *
+ * Uploads arrive in chunks cut at arbitrary points, so frames, frame headers and the ID3 tag
+ * can all be split across chunks. However the file is split, the count must be the same.
+ * (countFrames above uses FrameCounter with one big chunk, so those tests cover it too.)
+ */
+describe("FrameCounter", () => {
+  // The sample file, found relative to this test file (see import.meta.url).
+  const sample = readFileSync(new URL("../../test/fixtures/sample.mp3", import.meta.url));
+
+  /** Feeds `bytes` to a new FrameCounter in pieces whose sizes come from `nextSize`. */
+  function countInChunks(bytes: Uint8Array, nextSize: () => number): number {
+    const counter = new FrameCounter();
+    let offset = 0;
+    while (offset < bytes.length) {
+      const size = nextSize();
+      counter.push(bytes.subarray(offset, offset + size));
+      offset += size;
+    }
+    return counter.finish();
+  }
+
+  it.each([1, 3, 7, 64, 1000, 65536])("counts the sample in %i-byte chunks", (size) => {
+    expect(countInChunks(sample, () => size)).toBe(6089);
+  });
+
+  it("counts the sample in random-sized chunks", () => {
+    // A simple seeded random number generator, so a failure can be reproduced.
+    let seed = 42;
+    const random = () => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed / 2 ** 31;
+    };
+
+    expect(countInChunks(sample, () => 1 + Math.floor(random() * 5000))).toBe(6089);
+  });
+
+  // The edge cases from the countFrames tests, fed in one byte at a time so that every
+  // header, tag and marker is split across chunks.
+  it.each([
+    ["an ID3 tag", () => concat(id3Tag(5000), frame(), frame()), 2],
+    ["an ID3 tag with a footer", () => concat(id3Tag(34, { footer: true }), frame(), frame()), 2],
+    ["a Xing frame", () => concat(xingFrame("Xing", "stereo"), frame(), frame()), 2],
+    ["a mono Info frame", () => concat(xingFrame("Info", "mono"), frame(), frame()), 2],
+    ["junk between frames", () => concat(frame(), ascii("junk"), frame()), 2],
+    ["a cut-off final frame", () => concat(frame(), frame(), frame().subarray(0, 100)), 2],
+    ["frames of different lengths", () => concat(frame(0x50), frame(0x52), frame(0x90)), 3],
+  ])("handles %s split into 1-byte chunks", (_name, build, expected) => {
+    expect(countInChunks(build(), () => 1)).toBe(expected);
+  });
+
+  it("returns 0 when no data is pushed", () => {
+    expect(new FrameCounter().finish()).toBe(0);
+  });
+
+  it("returns the same count if finish() is called twice", () => {
+    const counter = new FrameCounter();
+    counter.push(concat(frame(), frame()));
+
+    expect(counter.finish()).toBe(2);
+    expect(counter.finish()).toBe(2);
+  });
+
+  it("throws if push() is called after finish()", () => {
+    const counter = new FrameCounter();
+    counter.finish();
+
+    expect(() => counter.push(frame())).toThrow("push() called after finish()");
   });
 });
